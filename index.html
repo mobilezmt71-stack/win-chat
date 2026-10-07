@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Real Chat App</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+    body { display: flex; height: 100vh; background: #f0f2f5; }
+    
+    /* AUTH UI */
+    #auth-screen { position: fixed; inset: 0; background: #fff; display: flex; align-items: center; justify-content: center; z-index: 10; }
+    .auth-box { width: 320px; padding: 25px; border: 1px solid #ddd; border-radius: 8px; text-align: center; }
+    .auth-box input { width: 100%; margin: 8px 0; padding: 10px; border: 1px solid #ccc; border-radius: 4px; }
+    .auth-box button { width: 100%; padding: 10px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-top: 5px; }
+
+    /* MAIN APP UI */
+    #app-screen { display: flex; width: 100%; height: 100%; }
+    .sidebar { width: 300px; border-right: 1px solid #ddd; background: #fff; display: flex; flex-direction: column; }
+    .header { padding: 15px; background: #f7f7f7; border-bottom: 1px solid #ddd; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+    .user-list { flex: 1; overflow-y: auto; }
+    .user-item { padding: 12px 15px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; }
+    .user-item:hover { background: #f0f0f0; }
+
+    .chat-area { flex: 1; display: flex; flex-direction: column; background: #efeae2; }
+    .chat-header { padding: 15px; background: #f7f7f7; border-bottom: 1px solid #ddd; font-weight: bold; }
+    .messages-box { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .msg { max-width: 60%; padding: 8px 12px; border-radius: 8px; font-size: 14px; word-break: break-word; }
+    .msg.sent { background: #d9fdd3; align-self: flex-end; }
+    .msg.received { background: #fff; align-self: flex-start; }
+    .msg img { max-width: 100%; border-radius: 4px; margin-top: 5px; }
+
+    .input-area { padding: 10px; background: #fff; display: flex; gap: 8px; border-top: 1px solid #ddd; }
+    .input-area input[type="text"] { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; }
+    .input-area button { padding: 10px 15px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- AUTH SCREEN -->
+  <div id="auth-screen">
+    <div class="auth-box">
+      <h2>Chat App</h2>
+      <input type="email" id="auth-email" placeholder="Email">
+      <input type="password" id="auth-password" placeholder="Password">
+      <button onclick="handleAuth('login')">Login</button>
+      <button onclick="handleAuth('signup')" style="background:#28a745;">Sign Up</button>
+      <p id="auth-error" style="color:red; font-size:12px; margin-top:8px;"></p>
+    </div>
+  </div>
+
+  <!-- MAIN APP SCREEN -->
+  <div id="app-screen" class="hidden">
+    <div class="sidebar">
+      <div class="header">
+        <span id="my-name">User</span>
+        <button onclick="logout()" style="padding:4px 8px; background:#dc3545; color:#fff; border:none; border-radius:4px; cursor:pointer;">Logout</button>
+      </div>
+      <div class="user-list" id="user-list"></div>
+    </div>
+
+    <div class="chat-area">
+      <div class="chat-header" id="chat-header">Select a user to chat</div>
+      <div class="messages-box" id="messages-box"></div>
+      <div class="input-area hidden" id="input-area">
+        <input type="file" id="file-input" style="display:none" onchange="uploadFile()">
+        <button onclick="document.getElementById('file-input').click()">📎</button>
+        <input type="text" id="msg-input" placeholder="Type a message..." onkeypress="if(event.key==='Enter') sendMsg()">
+        <button onclick="sendMsg()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 1. SUPABASE INITIALIZATION
+    const SUPABASE_URL = "https://maymwtoznmtaatuthtxt.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1heW13dG96bm10YWF0dXRodHh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEzMzk2MDMsImV4cCI6MjEwNjkxNTYwM30.ewpevR4eZsSiUz6Umc5IMw8ciMumag__04BUpDq9HIA";
+    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    let currentUser = null;
+    let selectedUser = null;
+
+    // 2. AUTHENTICATION
+    async function handleAuth(type) {
+      const email = document.getElementById('auth-email').value;
+      const password = document.getElementById('auth-password').value;
+      const errBox = document.getElementById('auth-error');
+      errBox.innerText = "";
+
+      if (!email || !password) return errBox.innerText = "Please enter email & password";
+
+      const res = type === 'signup' 
+        ? await supabase.auth.signUp({ email, password })
+        : await supabase.auth.signInWithPassword({ email, password });
+
+      if (res.error) errBox.innerText = res.error.message;
+      else checkUser();
+    }
+
+    async function checkUser() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        currentUser = session.user;
+        document.getElementById('auth-screen').classList.add('hidden');
+        document.getElementById('app-screen').classList.remove('hidden');
+        document.getElementById('my-name').innerText = currentUser.email.split('@')[0];
+        loadUsers();
+        listenRealtime();
+      }
+    }
+
+    async function logout() {
+      await supabase.auth.signOut();
+      location.reload();
+    }
+
+    // 3. LOAD USERS LIST
+    async function loadUsers() {
+      const { data } = await supabase.from('profiles').select('*').neq('id', currentUser.id);
+      const listEl = document.getElementById('user-list');
+      listEl.innerHTML = "";
+      
+      data?.forEach(u => {
+        const div = document.createElement('div');
+        div.className = 'user-item';
+        div.innerHTML = `<span>${u.username || u.full_name}</span><small style="color:gray;">${u.status || 'offline'}</small>`;
+        div.onclick = () => selectUser(u);
+        listEl.appendChild(div);
+      });
+    }
+
+    // 4. SELECT CHAT USER
+    function selectUser(user) {
+      selectedUser = user;
+      document.getElementById('chat-header').innerText = `Chat with ${user.username || user.full_name}`;
+      document.getElementById('input-area').classList.remove('hidden');
+      loadMessages();
+    }
+
+    // 5. LOAD & SEND MESSAGES
+    async function loadMessages() {
+      if (!selectedUser) return;
+      const { data } = await supabase.from('messages').select('*')
+        .or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${selectedUser.id}),and(sender_id.eq.${selectedUser.id},receiver_id.eq.${currentUser.id})`)
+        .order('created_at', { ascending: true });
+
+      const box = document.getElementById('messages-box');
+      box.innerHTML = "";
+      data?.forEach(renderMsg);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function renderMsg(msg) {
+      const box = document.getElementById('messages-box');
+      const div = document.createElement('div');
+      div.className = `msg ${msg.sender_id === currentUser.id ? 'sent' : 'received'}`;
+      
+      if (msg.file_url) {
+        if (msg.file_type?.startsWith('image')) div.innerHTML = `<img src="${msg.file_url}">`;
+        else div.innerHTML = `<a href="${msg.file_url}" target="_blank">📄 Attached File</a>`;
+      } else {
+        div.innerText = msg.content;
+      }
+      
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function sendMsg() {
+      const input = document.getElementById('msg-input');
+      const content = input.value.trim();
+      if (!content || !selectedUser) return;
+      input.value = "";
+
+      await supabase.from('messages').insert({
+        sender_id: currentUser.id,
+        receiver_id: selectedUser.id,
+        content: content
+      });
+    }
+
+    // 6. UPLOAD IMAGE / FILE
+    async function uploadFile() {
+      const fileInput = document.getElementById('file-input');
+      const file = fileInput.files[0];
+      if (!file || !selectedUser) return;
+
+      const path = `${Date.now()}_${file.name}`;
+      const { data, error } = await supabase.storage.from('chat-media').upload(path, file);
+
+      if (!error) {
+        const { data: { publicUrl } } = supabase.storage.from('chat-media').getPublicUrl(path);
+        await supabase.from('messages').insert({
+          sender_id: currentUser.id,
+          receiver_id: selectedUser.id,
+          file_url: publicUrl,
+          file_type: file.type
+        });
+      }
+      fileInput.value = "";
+    }
+
+    // 7. REALTIME LISTENER
+    function listenRealtime() {
+      supabase.channel('custom-all-channel')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
+          const m = payload.new;
+          if (selectedUser && (m.sender_id === selectedUser.id || m.receiver_id === selectedUser.id)) {
+            renderMsg(m);
+          }
+        }).subscribe();
+    }
+
+    // INIT
+    checkUser();
+  </script>
+</body>
+</html>
